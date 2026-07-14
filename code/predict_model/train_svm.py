@@ -1,10 +1,11 @@
 # train_svm_linearsvc.py
+import json
 import pandas as pd
 import numpy as np
 from pathlib import Path
 
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC, NuSVC
 from sklearn.metrics import (
     accuracy_score, precision_recall_fscore_support,
     classification_report, confusion_matrix
@@ -13,12 +14,16 @@ from scipy.sparse import hstack
 import joblib
 
 # ====== 檔案設定 ======
-TEXTS_CSV   = "prepocessing_data\cleaned_texts.csv"     # 含 image_name, cleaned_text
-LABELS_CSV  = "bertopic_labels_except_no_topic.csv"   # 含 image_name, new_topic_num
-SPLIT_CSV   = "split.csv"             # 含 image_name, split(train/test)
+TEXTS_CSV = "data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv"
+LABELS_CSV = "data\\topic_output\\output_bertopic\\bertopic_labels.csv"
+SPLIT_CSV = "else_file\split.csv"
 
-# ====== 輸出資料夾 ======
-SVM_DIR = Path("predict_model\svm_report_dir")
+# ** 外部控制變數 **
+CURRENT_EXP_ID = "SVM" # <-- 每次運行時修改或從命令行傳入
+
+# ====== Output artifacts ======
+# 根據 Exp ID 創建新的輸出目錄
+SVM_DIR = Path("data\model_output\only_output") / CURRENT_EXP_ID
 SVM_DIR.mkdir(parents=True, exist_ok=True)
 
 PRED_CSV      = SVM_DIR / "svm_predictions.csv"
@@ -50,6 +55,17 @@ def load_texts(path: str) -> pd.DataFrame:
         else:
             raise ValueError(f"{path} 需包含 image_name 欄位（或提供 image_path 以轉成檔名）")
     return df[["image_name", text_col]].rename(columns={text_col: "text"})
+
+
+def to_serializable(obj):
+    """Recursively convert objects into JSON-serializable forms."""
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [to_serializable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): to_serializable(v) for k, v in obj.items()}
+    return str(obj)
 
 def main():
     texts  = load_texts(TEXTS_CSV)
@@ -83,16 +99,18 @@ def main():
     # ====== TF-IDF (word + char 3–5) ======
     word_vect = TfidfVectorizer(
         analyzer="word",
-        ngram_range=(1, 2),   # 你也可調整 (1,3)
-        min_df=2,
+        ngram_range=(1, 2), # (1, 2) (1, 3) (1, 4)
+        min_df=5, #5, 10
         max_df=0.9,
-        strip_accents="unicode"
+        strip_accents="unicode",
+        dtype=np.float32
     )
     char_vect = TfidfVectorizer(
         analyzer="char",
-        ngram_range=(3, 5),   # 依你需求：char 3–5
-        min_df=2,
-        max_df=0.95
+        ngram_range=(3, 5), # (3, 5) (3, 6)
+        min_df=5, #5, 10
+        max_df=0.95,
+        dtype=np.float32
     )
 
     Xw_tr = word_vect.fit_transform(X_train_text)
@@ -104,7 +122,8 @@ def main():
     X_test = hstack([Xw_te, Xc_te])
 
     # ====== 建模：LinearSVC ======
-    clf = LinearSVC(C=1.0, class_weight="balanced", random_state=42)
+    clf = LinearSVC(C=3.0, class_weight="balanced", random_state=42) #0.5, 1, 3, 5, 10
+
     clf.fit(X_train, y_train)
 
     # ====== 預測與評估 ======
@@ -135,7 +154,14 @@ def main():
         f.write(f"f1(weighted)       : {f1_weight:.4f}\n\n")
         f.write("[Per-class report]\n")
         f.write(report)
-        # f.write("\n[Confusion Matrix saved to] " + CM_CSV + "\n")
+        f.write("\n[Parameters]\n")
+        param_snapshot = {
+            "linear_svc": clf.get_params(),
+            "tfidf_word": word_vect.get_params(),
+            "tfidf_char": char_vect.get_params()
+        }
+        f.write(json.dumps(to_serializable(param_snapshot), ensure_ascii=False, indent=2))
+        f.write("\n")
 
     # 儲存預測明細
     out_pred = df_test[["image_name", "label"]].copy()

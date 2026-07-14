@@ -1,4 +1,4 @@
-# train_rf_tfidf_chi2.py
+﻿# train_rf_tfidf_chi2.py
 import json
 from pathlib import Path
 
@@ -16,15 +16,21 @@ from sklearn.metrics import (
 )
 from sklearn.ensemble import RandomForestClassifier
 
-# ====== 輸入檔 ======
-TEXTS_CSV   = "prepocessing_data\cleaned_texts.csv"     # 含 image_name, cleaned_text
-LABELS_CSV  = "bertopic_labels_except_no_topic.csv"   # 含 image_name, new_topic_num
-SPLIT_CSV   = "split.csv"             # 含 image_name, split(train/test)
+# ====== Input files ======
+TEXTS_CSV = "data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv"
+LABELS_CSV = "data\\topic_output\\output_bertopic\\bertopic_labels.csv"
+SPLIT_CSV = "else_file\split.csv"
 
-# ====== 輸出資料夾 ======
-RF_DIR = Path("predict_model\\rf_report_dir")
+
+# ** 外部控制變數 **
+CURRENT_EXP_ID = "RF" # <-- 每次運行時修改或從命令行傳入
+
+# ====== Output artifacts ======
+# 根據 Exp ID 創建新的輸出目錄
+RF_DIR = Path("data\model_output\only_output") / CURRENT_EXP_ID
 RF_DIR.mkdir(parents=True, exist_ok=True)
 
+# ====== Output artifacts ======
 PRED_CSV       = RF_DIR / "rf_predictions.csv"
 REPORT_TXT     = RF_DIR / "rf_report.txt"
 CM_CSV         = RF_DIR / "rf_confusion_matrix.csv"
@@ -36,7 +42,18 @@ LABEL_MAP_JSON = RF_DIR / "label_mapping.json"
 PARAMS_JSON    = RF_DIR / "rf_params.json"
 META_JSON      = RF_DIR / "meta.json"
 
-# ====== 讀文字欄位 ======
+
+def safe_params(obj):
+    """Convert nested parameter structures into JSON-serializable types."""
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): safe_params(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [safe_params(v) for v in obj]
+    return str(obj)
+
+
 def load_texts(path: str) -> pd.DataFrame:
     df = None
     for enc in ("utf-8", "utf-8-sig", "cp950"):
@@ -46,62 +63,66 @@ def load_texts(path: str) -> pd.DataFrame:
         except Exception:
             pass
     if df is None:
-        raise RuntimeError(f"讀取 {path} 失敗（編碼問題？）")
+        raise RuntimeError(f"Failed to read {path} using utf-8/utf-8-sig/cp950 encodings.")
 
     for cand in ["cleaned_text", "text", "desc", "description"]:
         if cand in df.columns:
             text_col = cand
             break
     else:
-        raise ValueError(f"{path} 必須包含文字欄位 cleaned_text/text/desc/description")
+        raise ValueError(f"{path} must contain one of columns cleaned_text/text/desc/description")
 
     if "image_name" not in df.columns:
         if "image_path" in df.columns:
-            from pathlib import Path as _P
-            df["image_name"] = df["image_path"].apply(lambda p: _P(str(p)).name)
+            df["image_name"] = df["image_path"].apply(lambda p: Path(str(p)).name)
         else:
-            raise ValueError(f"{path} 必須有 image_name 欄位或 image_path 欄位")
+            raise ValueError(f"{path} must contain image_name or image_path column.")
 
     return df[["image_name", text_col]].rename(columns={text_col: "text"})
 
+
 def main():
-    print("[INFO] 讀取與合併...")
-    texts  = load_texts(TEXTS_CSV)
+    print("[INFO] Loading and merging data...")
+    texts = load_texts(TEXTS_CSV)
     labels = pd.read_csv(LABELS_CSV)[["image_name", "new_topic_num"]]
-    split  = pd.read_csv(SPLIT_CSV)[["image_name", "split"]]
+    split = pd.read_csv(SPLIT_CSV)[["image_name", "split"]]
 
     df = (
         texts.merge(labels, on="image_name", how="inner")
-             .merge(split, on="image_name", how="inner")
+            .merge(split, on="image_name", how="inner")
     ).dropna(subset=["text", "new_topic_num", "split"])
 
     if df.empty:
-        raise ValueError("合併後資料為空，請檢查 image_name 是否對齊")
+        raise ValueError("Merged dataframe is empty. Check that image_name values match across files.")
 
     df["text"] = df["text"].astype(str)
     df["label_str"] = df["new_topic_num"].astype(str)
 
-    print(f"[INFO] 合併後樣本數: {len(df)}；類別數: {df['label_str'].nunique()}")
+    print(f"[INFO] Samples: {len(df)} | Classes: {df['label_str'].nunique()}")
     print(df["split"].value_counts())
 
     df_train = df[df["split"] == "train"].copy()
-    df_test  = df[df["split"] == "test"].copy()
+    df_test = df[df["split"] == "test"].copy()
     if df_train.empty or df_test.empty:
-        raise ValueError("train 或 test 為空，請檢查 split.csv")
+        raise ValueError("train/test splits contain no samples. Verify split.csv.")
 
     X_train_text = df_train["text"].values
-    X_test_text  = df_test["text"].values
+    X_test_text = df_test["text"].values
 
-    # ====== TF-IDF（word + char 3–5, float32）======
-    print("[INFO] 建立 TF-IDF...")
+    print("[INFO] Building TF-IDF vectorizers...")
     word_vect = TfidfVectorizer(
-        analyzer="word", ngram_range=(1, 2),
-        min_df=2, max_df=0.9, strip_accents="unicode",
+        analyzer="word",
+        ngram_range=(1, 2), # (1, 2) (1, 3) (1, 4)
+        min_df=5, #5, 10
+        max_df=0.9,
+        strip_accents="unicode",
         dtype=np.float32
     )
     char_vect = TfidfVectorizer(
-        analyzer="char", ngram_range=(3, 5),
-        min_df=2, max_df=0.95,
+        analyzer="char",
+        ngram_range=(3, 5), # (3, 5) (3, 6)
+        min_df=5, #5, 10
+        max_df=0.95,
         dtype=np.float32
     )
 
@@ -114,25 +135,21 @@ def main():
     X_test_sparse = hstack([Xw_te, Xc_te]).tocsr()
 
     n_samples, n_features = X_train_sparse.shape
-    print(f"[INFO] TF-IDF 維度: {n_features}  訓練樣本: {n_samples}")
+    print(f"[INFO] TF-IDF shape -> samples: {n_samples}, features: {n_features}")
 
-    # ====== Feature Selection: Chi2 → K 維（快速、穩定）======
-    K = min(2000, n_features)  # 你可以調 1000/2000/4000
-    print(f"[INFO] Chi2 特徵選擇: k={K}")
+    K = min(2000, n_features) #1000, 5000, 10000
+    print(f"[INFO] Applying chi2 feature selection with k={K}")
     selector = SelectKBest(score_func=chi2, k=K)
-    # chi2 需要非負，因此用 TF-IDF OK；保持稀疏 -> transform 結果仍是稀疏
     X_train_sel = selector.fit_transform(X_train_sparse, df_train["label_str"].values)
-    X_test_sel  = selector.transform(X_test_sparse)
+    X_test_sel = selector.transform(X_test_sparse)
 
-    # 轉 dense（K=2000 時，~ 5k×2k ≈ 40MB）
-    print("[INFO] 轉 dense 以餵 RandomForest ...")
+    print("[INFO] Converting selected features to dense matrices for RandomForest...")
     X_train = X_train_sel.toarray()
-    X_test  = X_test_sel.toarray()
+    X_test = X_test_sel.toarray()
 
-    # ====== 標籤整數化 ======
     le = LabelEncoder()
     y_train = le.fit_transform(df_train["label_str"].values)
-    y_test  = le.transform(df_test["label_str"].values)
+    y_test = le.transform(df_test["label_str"].values)
 
     with open(LABEL_MAP_JSON, "w", encoding="utf-8") as f:
         json.dump({
@@ -140,10 +157,9 @@ def main():
             "mapping": {int(i): cls for i, cls in enumerate(le.classes_)}
         }, f, ensure_ascii=False, indent=2)
 
-    # ====== RF 參數 ======
     params = {
-        "n_estimators": 600,
-        "max_depth": None,
+        "n_estimators": 600, #400, 800, 1200
+        "max_depth": None, #20, 30, None
         "min_samples_split": 2,
         "min_samples_leaf": 1,
         "max_features": "sqrt",
@@ -156,11 +172,11 @@ def main():
     with open(PARAMS_JSON, "w", encoding="utf-8") as f:
         json.dump(params, f, ensure_ascii=False, indent=2)
 
-    print("[INFO] 訓練 RandomForest ...")
+    print("[INFO] Training RandomForest...")
     clf = RandomForestClassifier(**params)
     clf.fit(X_train, y_train)
 
-    print("[INFO] 預測與評估 ...")
+    print("[INFO] Evaluating...")
     y_pred = clf.predict(X_test)
 
     acc = accuracy_score(y_test, y_pred)
@@ -197,6 +213,14 @@ def main():
         f.write(f"f1(weighted)       : {f1_weight:.4f}\n\n")
         f.write("[Per-class report]\n")
         f.write(report)
+        f.write("\n[Parameters]\n")
+        param_snapshot = {
+            "random_forest": safe_params(params),
+            "tfidf_word": safe_params(word_vect.get_params()),
+            "tfidf_char": safe_params(char_vect.get_params()),
+            "chi2": {"k": int(K)}
+        }
+        f.write(json.dumps(param_snapshot, ensure_ascii=False, indent=2))
         f.write("\n[Confusion Matrix saved to] " + str(CM_CSV) + "\n")
 
     out_pred = df_test[["image_name"]].copy()
@@ -209,15 +233,6 @@ def main():
     joblib.dump(char_vect, VECT_CHAR)
     joblib.dump(selector, SEL_JOBLIB)
 
-    def safe_params(params: dict) -> dict:
-        out = {}
-        for k, v in params.items():
-            if isinstance(v, (str, int, float, bool)) or v is None:
-                out[k] = v
-            else:
-                out[k] = str(v)   # 把 type、function 等轉成字串
-        return out
-
     with open(META_JSON, "w", encoding="utf-8") as f:
         json.dump({
             "vectorizer_word_params": safe_params(word_vect.get_params()),
@@ -227,16 +242,16 @@ def main():
             "train_dim": int(X_train.shape[1])
         }, f, ensure_ascii=False, indent=2)
 
-
-    print(f"[OK] RF(chi2) 訓練完成 @ {RF_DIR.resolve()}")
+    print(f"[OK] RF (chi2) training finished @ {RF_DIR.resolve()}")
     print(f"Accuracy={acc:.4f}  Macro-F1={f1_macro:.4f}  Weighted-F1={f1_weight:.4f}")
-    print(f"- 報告: {REPORT_TXT}")
-    print(f"- 混淆矩陣: {CM_CSV}")
-    print(f"- 預測: {PRED_CSV}")
-    print(f"- 模型: {MODEL_JOBLIB}")
-    print(f"- 向量器: {VECT_WORD}, {VECT_CHAR}")
-    print(f"- 特徵選擇: {SEL_JOBLIB}")
-    print(f"- 標籤對應: {LABEL_MAP_JSON}")
+    print(f"- Report: {REPORT_TXT}")
+    print(f"- Confusion matrix: {CM_CSV}")
+    print(f"- Predictions: {PRED_CSV}")
+    print(f"- Model: {MODEL_JOBLIB}")
+    print(f"- Vectorizers: {VECT_WORD}, {VECT_CHAR}")
+    print(f"- Feature selector: {SEL_JOBLIB}")
+    print(f"- Label map: {LABEL_MAP_JSON}")
+
 
 if __name__ == "__main__":
     main()

@@ -130,8 +130,8 @@ def main(model_path: str, input_csv: str, text_col: str, output_csv: str):
 
 if __name__ == "__main__":
     # ==== 依據 Colab 預設路徑寫死，可依需要自行修改 ====
-    MODEL_PATH  = "/content/bertopic_finetuned_model"
-    INPUT_CSV   = "/content/cleaned_texts.csv"
+    MODEL_PATH  = "bertopic_finetuned_model"
+    INPUT_CSV   = "data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv"
     TEXT_COLUMN = "cleaned_text"
     OUTPUT_CSV  = "topic_proportions.csv"
 

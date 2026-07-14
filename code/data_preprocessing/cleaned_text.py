@@ -153,7 +153,7 @@ def load_and_clean(csv_path: str, text_col: str = "Description") -> List[List[st
 
 # 腳本進入點：預設讀取 CSV 並輸出清理後結果。
 if __name__ == "__main__":
-    CSV_PATH = "image_descriptions_all.csv"
+    CSV_PATH = "data\init_data\prepocessing_data\image_descriptions\image_descriptions_ig_twitter.csv"
     log_step(f"Input CSV path: {CSV_PATH}")
 
     log_step("Preprocessing documents")
@@ -172,5 +172,5 @@ if __name__ == "__main__":
             out_df.insert(0, "image_name", _src_df[_name_col].astype(str).tolist())
     except Exception:
         pass
-    out_df.to_csv("cleaned_texts.csv", index=False)
+    out_df.to_csv("data\init_data\prepocessing_data\image_descriptions\cleaned_texts_final_ig_twitter.csv", index=False)
     log_step("Cleaned texts saved to cleaned_texts.csv")

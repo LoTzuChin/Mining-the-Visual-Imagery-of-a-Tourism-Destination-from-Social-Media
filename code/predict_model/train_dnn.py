@@ -33,12 +33,16 @@ for g in tf.config.list_physical_devices('GPU'):
         pass
 
 # ====== 檔案設定 ======
-TEXTS_CSV   = "prepocessing_data\cleaned_texts.csv"     # 含 image_name, cleaned_text
-LABELS_CSV  = "bertopic_labels_except_no_topic.csv"   # 含 image_name, new_topic_num
-SPLIT_CSV   = "split.csv"             # 含 image_name, split(train/test)
+TEXTS_CSV = "data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv"
+LABELS_CSV = "data\\topic_output\\output_bertopic\\bertopic_labels.csv"
+SPLIT_CSV = "else_file\split.csv"
 
+# ** 外部控制變數 **
+CURRENT_EXP_ID = "DNN" # <-- 每次運行時修改或從命令行傳入
 
-DNN_DIR = Path("predict_model\\dnn_report_dir")
+# ====== Output artifacts ======
+# 根據 Exp ID 創建新的輸出目錄
+DNN_DIR = Path("data\model_output\only_output") / CURRENT_EXP_ID
 DNN_DIR.mkdir(parents=True, exist_ok=True)
 
 PRED_CSV       = DNN_DIR / "dnn_predictions.csv"
@@ -71,28 +75,32 @@ def load_texts(path: str) -> pd.DataFrame:
             raise ValueError(f"{path} 必須包含 image_name 或 image_path 欄位")
     return df[["image_name", text_col]].rename(columns={text_col: "text"})
 
+
+def to_serializable(obj):
+    """Convert objects into JSON-serializable structures."""
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [to_serializable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): to_serializable(v) for k, v in obj.items()}
+    return str(obj)
+
 def main():
     t0 = time.time()
     tlog(f"TensorFlow {tf.__version__}, GPUs={tf.config.list_physical_devices('GPU')}")
 
     # ====== 超參數（含 SRP 維度）======
     params = {
-        "proj_components": 256,   # SRP 投影維度（可改 128/256/384/512）
-        "batch_size": 256,
-        "epochs": 50,
+        "proj_components": 256,   # (128/ 256/ 384/ 512）
+        "batch_size": 32,
+        "epochs": 100,
         "patience": 6,
-        "lr": 1e-3,
-        "dropout": 0.3,
-        "hidden1": 512,
-        "hidden2": 256,
+        "lr": 1e-3, # 5e-4, 2e-3, 1e-3
+        "dropout": 0.6, # 0.4, 0.5, 0.6, 0.7
+        "hidden1": 512, # 384, 768, 512
+        "hidden2": 256, #192, 384, 256
         "seed": 42,
-        # TF-IDF 控制（限制特徵數可大幅降記憶體）
-        "word_max_features": 40000,
-        "char_max_features": 30000,
-        "word_min_df": 3,
-        "char_min_df": 3,
-        "char_ngram_lo": 3,
-        "char_ngram_hi": 4,
     }
     with open(PARAMS_JSON, "w", encoding="utf-8") as f:
         json.dump(params, f, ensure_ascii=False, indent=2)
@@ -115,20 +123,36 @@ def main():
 
     # ====== TF-IDF（word + char；限制特徵數與 df）======
     tlog("Building TF-IDF vectorizers (with caps) ...")
+    # word_vect = TfidfVectorizer(
+    #     analyzer="word",
+    #     ngram_range=(1, 2),
+    #     min_df=params["word_min_df"],
+    #     max_df=0.9,
+    #     max_features=params["word_max_features"],
+    #     strip_accents="unicode"
+    # )
+    # char_vect = TfidfVectorizer(
+    #     analyzer="char",
+    #     ngram_range=(params["char_ngram_lo"], params["char_ngram_hi"]),
+    #     min_df=params["char_min_df"],
+    #     max_df=0.95,
+    #     max_features=params["char_max_features"]
+    # )
+
     word_vect = TfidfVectorizer(
         analyzer="word",
-        ngram_range=(1, 2),
-        min_df=params["word_min_df"],
+        ngram_range=(1, 2), # (1, 2) (1, 3) (1, 4)
+        min_df=5, #5, 10
         max_df=0.9,
-        max_features=params["word_max_features"],
-        strip_accents="unicode"
+        strip_accents="unicode",
+        dtype=np.float32
     )
     char_vect = TfidfVectorizer(
         analyzer="char",
-        ngram_range=(params["char_ngram_lo"], params["char_ngram_hi"]),
-        min_df=params["char_min_df"],
+        ngram_range=(3, 5), # (3, 5) (3, 6)
+        min_df=5, #5, 10
         max_df=0.95,
-        max_features=params["char_max_features"]
+        dtype=np.float32
     )
 
     tlog("Fitting TF-IDF on train ...")
@@ -247,6 +271,15 @@ def main():
         f.write(f"f1(weighted)       : {f1_weight:.4f}\n\n")
         f.write("[Per-class report]\n")
         f.write(report)
+        f.write("\n[Parameters]\n")
+        param_snapshot = {
+            "dnn_hyperparams": params,
+            "class_weight": class_weight,
+            "tfidf_word": word_vect.get_params(),
+            "tfidf_char": char_vect.get_params(),
+            "sparse_random_projection": srp.get_params()
+        }
+        f.write(json.dumps(to_serializable(param_snapshot), ensure_ascii=False, indent=2))
         f.write("\n[Confusion Matrix saved to] " + str(CM_CSV) + "\n")
 
     out_pred = df_test[["image_name"]].copy()

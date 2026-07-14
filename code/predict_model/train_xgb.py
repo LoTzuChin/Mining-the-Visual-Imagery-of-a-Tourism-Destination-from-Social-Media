@@ -15,12 +15,16 @@ import joblib
 import xgboost as xgb
 
 # ====== 輸入檔 ======
-TEXTS_CSV   = "prepocessing_data\cleaned_texts.csv"     # 含 image_name, cleaned_text
-LABELS_CSV  = "bertopic_labels_except_no_topic.csv"   # 含 image_name, new_topic_num
-SPLIT_CSV   = "split.csv"             # 含 image_name, split(train/test)
+TEXTS_CSV = "data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv"
+LABELS_CSV = "data\\topic_output\\output_bertopic\\bertopic_labels.csv"
+SPLIT_CSV = "else_file\split.csv"
 
-# ====== 輸出資料夾與檔名 ======
-XGB_DIR = Path("predict_model\\xgb_report_dir")
+# ** 外部控制變數 **
+CURRENT_EXP_ID = "XGB" # <-- 每次運行時修改或從命令行傳入
+
+# ====== Output artifacts ======
+# 根據 Exp ID 創建新的輸出目錄
+XGB_DIR = Path("data\model_output\only_output") / CURRENT_EXP_ID
 XGB_DIR.mkdir(parents=True, exist_ok=True)
 
 PRED_CSV      = XGB_DIR / "xgb_predictions.csv"
@@ -58,6 +62,16 @@ def build_sample_weight(labels: np.ndarray) -> np.ndarray:
     weights = np.array([total / (len(freq) * freq[y]) for y in labels], dtype=np.float32)
     return weights
 
+def to_serializable(obj):
+    """將參數物件轉成可序列化格式，避免 dtype 等型別寫檔失敗。"""
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [to_serializable(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): to_serializable(v) for k, v in obj.items()}
+    return str(obj)
+
 def main():
     # ====== 載入與合併 ======
     texts  = load_texts(TEXTS_CSV)
@@ -81,10 +95,21 @@ def main():
 
     # ====== TF-IDF（word + char 3–5）======
     word_vect = TfidfVectorizer(
-        analyzer="word", ngram_range=(1, 2), min_df=2, max_df=0.9, strip_accents="unicode"
+        analyzer="word",
+        ngram_range=(1, 2), # (1, 2) (1, 3) (1, 4)
+        min_df=20, #5, 10
+        max_df=0.9,
+        strip_accents="unicode",
+        max_features=40000,     # ⭐️ 限制特徵數量
+        dtype=np.float32
     )
     char_vect = TfidfVectorizer(
-        analyzer="char", ngram_range=(3, 5), min_df=2, max_df=0.95
+        analyzer="char",
+        ngram_range=(3, 5), # (3, 5) (3, 6)
+        min_df=20, #5, 10
+        max_df=0.95,
+        max_features=30000,    # ⭐️ 限制特徵數量
+        dtype=np.float32
     )
 
     Xw_tr = word_vect.fit_transform(X_train_text)
@@ -112,22 +137,26 @@ def main():
     sample_weight = build_sample_weight(y_train)
 
     # ====== XGBoost GPU 參數 ======
+    # 1) 參數：移除 n_estimators，避免多餘警告
     params = {
         "objective": "multi:softprob",
         "num_class": num_classes,
         "eval_metric": "mlogloss",
-        "tree_method": "gpu_hist",     # 使用 GPU
-        "predictor": "gpu_predictor",
-        "learning_rate": 0.1,
-        "max_depth": 8,
+        "tree_method": "hist",
+        "device": "cuda",
+        "learning_rate": 0.05,
+        "max_depth": 6,
         "min_child_weight": 1.0,
         "subsample": 0.9,
         "colsample_bytree": 0.9,
         "reg_alpha": 0.0,
         "reg_lambda": 1.0,
-        "n_estimators": 1000,
-        "random_state": 42
+        "random_state": 42,
     }
+
+    num_boost_round = 2000  # 原本放在 params["n_estimators"] 的數字，獨立拿出來
+
+
     with open(PARAMS_JSON, "w", encoding="utf-8") as f:
         json.dump(params, f, ensure_ascii=False, indent=2)
 
@@ -137,13 +166,14 @@ def main():
     dvalid = xgb.DMatrix(X_test,  label=y_test)
 
     # 早停
+    # 2) 訓練：把 verbose_eval 調小，方便觀察
     bst = xgb.train(
         params,
         dtrain,
-        num_boost_round=params["n_estimators"],
+        num_boost_round=num_boost_round,
         evals=[(dtrain, "train"), (dvalid, "valid")],
         early_stopping_rounds=50,
-        verbose_eval=50
+        verbose_eval=10,  # <- 每 10 輪列印一次
     )
 
     # ====== 預測與評估 ======
@@ -188,7 +218,15 @@ def main():
         f.write(f"f1(weighted)       : {f1_weight:.4f}\n\n")
         f.write("[Per-class report]\n")
         f.write(report)
-        f.write("\n[Confusion Matrix saved to] " + str(CM_CSV) + "\n")
+        f.write("\n[Confusion Matrix saved to] " + str(CM_CSV) + "\n\n")
+        f.write("[Parameters]\n")
+        param_snapshot = {
+            "xgboost": params,
+            "tfidf_word": word_vect.get_params(),
+            "tfidf_char": char_vect.get_params()
+        }
+        f.write(json.dumps(to_serializable(param_snapshot), ensure_ascii=False, indent=2))
+        f.write("\n")
 
     # 預測明細
     out_pred = df_test[["image_name"]].copy()

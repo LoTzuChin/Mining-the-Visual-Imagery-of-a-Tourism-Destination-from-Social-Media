@@ -61,7 +61,7 @@ def writeCsv(topic_model, topics, filename="topic.csv"):
 if __name__ == "__main__":
     print("[INFO] Reading CSV...")
     # 若原始資料為 Big5/CP950，可調整為 encoding="utf-8-sig" 並加入 errors="ignore"
-    df = pd.read_csv('/content/cleaned_texts.csv')
+    df = pd.read_csv('data\init_data\prepocessing_data\cleaned_texts_final_ig_twitter.csv')
     topic_model, topics = train(df)
     writeCsv(topic_model, topics, "topic.csv")
     topic_model.save("bertopic_finetuned_model")
