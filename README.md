@@ -73,7 +73,7 @@ code/
     ├── train_xgb.py             # XGBoost classifier
     ├── train_dnn.py             # DNN classifier (Keras)
     ├── model_test_tf-idf.py     # Unified model evaluation
-    └── new_model/               # Multi-label classifiers used in the paper
+    └── new_model/               # Multi-label classifiers
         ├── new_svm.py
         ├── new_rf.py
         ├── new_xgboost.py
