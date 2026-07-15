@@ -1,0 +1,30 @@
+# Core data processing
+pandas
+numpy
+scipy
+joblib
+tqdm
+
+# NLP & text preprocessing
+nltk
+spacy
+gensim
+scikit-learn
+
+# Topic modeling
+bertopic
+sentence-transformers
+
+# Deep learning (DNN classifier)
+tensorflow>=2.10.0
+
+# Gradient boosting
+xgboost
+
+# Google Cloud APIs
+google-cloud-vision
+google-genai
+
+# Visualization
+matplotlib
+wordcloud
